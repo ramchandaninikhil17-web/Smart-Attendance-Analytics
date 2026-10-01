@@ -1,8 +1,8 @@
-import React, { useState, type ReactNode } from 'react';
+import React, { useState, useEffect, type ReactNode, useRef } from 'react';
 import { Link } from 'wouter';
 import {
   Activity, Users, Clock3, AlertTriangle, ArrowRight, ArrowUpRight, Download, Plus,
-  Sparkles, BookOpen, CalendarDays, Fingerprint, ShieldCheck, Send,
+  Sparkles, BookOpen, CalendarDays, Fingerprint, ShieldCheck, Send, Camera, X
 } from 'lucide-react';
 import { Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import type { Store } from '../data';
@@ -11,6 +11,8 @@ import {
   presentCount, classLabel, getTeacher, getClass, initials, formatGreetingName,
   toneForStatus, fmtDate, fmtTime, attendanceColors,
 } from '../utils';
+import { apiFetch } from '../api';
+import jsQR from 'jsqr';
 
 export function MetricCard({
   label, value, detail, detailTone = 'neutral', icon, mark, warn = false,
@@ -151,7 +153,7 @@ export function OverviewPage({ store, onToast }: { store: Store; onToast: (msg: 
         <Card className="distribution-card">
           <div className="card-head">
             <div>
-              <span className="eyebrow">TODAY · ALL LECTURES & LABS</span>
+              <span className="eyebrow">TODAY - ALL LECTURES & LABS</span>
               <h2>Attendance Mix</h2>
             </div>
             <Link href="/analytics" className="text-link">Full breakdown <ArrowRight size={14} /></Link>
@@ -215,7 +217,7 @@ export function OverviewPage({ store, onToast }: { store: Store; onToast: (msg: 
                 <span className="session-live-indicator"><i /></span>
                 <span className="live-session-name">
                   <b>{classLabel(store, session.classId)}</b>
-                  <small>{getTeacher(store, session.teacherId)?.name} · Started {fmtTime(session.start)}</small>
+                  <small>{getTeacher(store, session.teacherId)?.name} - Started {fmtTime(session.start)}</small>
                 </span>
                 <span className="live-session-count">
                   <b>{presentCount(session)}</b>
@@ -254,7 +256,7 @@ export function OverviewPage({ store, onToast }: { store: Store; onToast: (msg: 
                 <span className="avatar avatar-small">{initials(s.name)}</span>
                 <span className="risk-student-copy">
                   <b>{s.name}</b>
-                  <small>{classLabel(store, s.classId)} · {s.studentId}</small>
+                  <small>{classLabel(store, s.classId)} - {s.studentId}</small>
                 </span>
                 <div className="risk-meter">
                   <div style={{ width: `${s.attendancePercent}%` }} />
@@ -284,17 +286,123 @@ export function OverviewPage({ store, onToast }: { store: Store; onToast: (msg: 
   );
 }
 
+function QRScannerModal({ onClose, onScan, store }: { onClose: () => void, onScan: (code: string) => void, store: Store }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [error, setError] = useState('');
+  
+  useEffect(() => {
+    let stream: MediaStream | null = null;
+    let animationFrame: number;
+    
+    const startCamera = async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play();
+        }
+      } catch (err: any) {
+        if (err.name === 'NotAllowedError') {
+          setError("Camera permission is required to scan the attendance QR.");
+        } else {
+          setError("Unable to access camera. Please ensure you have a working camera.");
+        }
+      }
+    };
+    
+    const tick = () => {
+      if (videoRef.current && videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
+        const canvas = document.createElement('canvas');
+        canvas.width = videoRef.current.videoWidth;
+        canvas.height = videoRef.current.videoHeight;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const code = jsQR(imageData.data, imageData.width, imageData.height, {
+            inversionAttempts: "dontInvert",
+          });
+          if (code) {
+            onScan(code.data);
+            return; // Stop ticking if scanned
+          }
+        }
+      }
+      animationFrame = requestAnimationFrame(tick);
+    };
+    
+    startCamera().then(() => {
+      requestAnimationFrame(tick);
+    });
+    
+    return () => {
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      cancelAnimationFrame(animationFrame);
+    };
+  }, [onScan]);
+
+  return (
+    <Modal open onClose={onClose} title="Scan QR Code" footer={<Button onClick={onClose}>Close</Button>}>
+      <div style={{ textAlign: 'center', padding: '16px 0' }}>
+        {error ? (
+          <div>
+            <div style={{ color: '#d76c60', marginBottom: 12 }}>{error}</div>
+            <Button onClick={() => window.location.reload()}>Retry</Button>
+          </div>
+        ) : (
+          <div style={{ position: 'relative', width: '100%', maxWidth: 300, margin: '0 auto', overflow: 'hidden', borderRadius: 12 }}>
+            <video ref={videoRef} style={{ width: '100%', display: 'block' }} playsInline muted />
+            <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '60%', height: '60%', border: '2px solid rgba(24, 118, 103, 0.5)', borderRadius: 8, pointerEvents: 'none' }}></div>
+          </div>
+        )}
+        <p style={{ marginTop: 16, fontSize: 13, color: '#576763' }}>Align the 15-second rotating classroom QR code within the frame.</p>
+      </div>
+    </Modal>
+  );
+}
+
 export function StudentOverview({ store, onToast }: { store: Store; onToast: (msg: string) => void }) {
-  const student = store.students.find(s => s.id === 'st001') ?? store.students[0];
-  const live = store.sessions.find(s => s.status === 'Live');
-  const recent = store.sessions.filter(session => session.attendanceRecords.some(record => record.studentId === student?.id)).slice(0, 4);
+  const [profile, setProfile] = useState<any>(null);
+  const [attendance, setAttendance] = useState<any[]>([]);
+  const [activeSession, setActiveSession] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  
+  const [showScanner, setShowScanner] = useState(false);
+  const threshold = store.settings.attendanceThreshold || 75;
+
+  useEffect(() => {
+    // Fetch personalized data exclusively from backend using the session token
+    Promise.all([
+      apiFetch('/api/student/profile'),
+      apiFetch('/api/student/attendance'),
+      apiFetch('/api/student/active-session')
+    ]).then(([profileRes, attRes, sessionRes]) => {
+      if (profileRes.success) setProfile(profileRes.data);
+      if (attRes.success && Array.isArray(attRes.data)) setAttendance(attRes.data);
+      if (sessionRes.success) setActiveSession(sessionRes.data);
+      setLoading(false);
+    });
+  }, []);
+
+  if (loading) {
+    return <div style={{ padding: 40, textAlign: 'center' }}>Loading personalized student dashboard...</div>;
+  }
+
+  // Use backend fetched data. Fallback to store only for visual mock consistency if backend fails
+  const student = profile || store.students.find(s => s.id === 'st001') || store.students[0];
   const currentPct = student?.attendancePercent ?? 0;
-  const threshold = store.settings.attendanceThreshold;
+  
+  // Calculate attendance stats from backend
+  const totalClasses = attendance.length || 0;
+  const classesAttended = attendance.filter(a => a.status === 'Present').length;
+  const classesMissed = attendance.filter(a => a.status === 'Absent' || a.status === 'Late').length;
+  const lateCount = attendance.filter(a => a.status === 'Late').length;
+
   const isBelow = currentPct < threshold;
 
   // Recovery calculation:
-  const baseTotal = 24;
-  const baseAttended = Math.round((currentPct / 100) * baseTotal);
+  const baseTotal = Math.max(24, totalClasses);
+  const baseAttended = Math.max(Math.round((currentPct / 100) * baseTotal), classesAttended);
   const neededConsecutive = isBelow ? Math.max(1, Math.ceil((threshold * baseTotal - 100 * baseAttended) / (100 - threshold))) : 0;
   const [simulatedClasses, setSimulatedClasses] = useState(neededConsecutive || 2);
   const simulatedPercent = Math.min(100, Math.round(((baseAttended + simulatedClasses) / (baseTotal + simulatedClasses)) * 100));
@@ -302,37 +410,66 @@ export function StudentOverview({ store, onToast }: { store: Store; onToast: (ms
   const [advisorModal, setAdvisorModal] = useState(false);
   const advisor = getTeacher(store, getClass(store, student?.classId ?? '')?.teacherId ?? 't1');
 
+  const handleScanCode = async (code: string) => {
+    setShowScanner(false);
+    // Continue attendance verification by redirecting with code or verifying here
+    // In this case, we simply push to /verify with state or trigger an API call.
+    window.location.href = '/verify?code=' + encodeURIComponent(code);
+    onToast('QR Code captured! Proceeding to biometric verification.');
+  };
+
   return (
     <div className="page-stack">
       <PageHeader
         eyebrow="CHARUSAT STUDENT PORTAL"
-        title={`Welcome back, ${student?.name.split(' ')[0] ?? 'Student'}.`}
+        title={`Welcome back, ${store.currentUser.name.split(' ')[0] ?? 'Student'}.`}
         description="Verify your classroom attendance, monitor your 75% course threshold, and track recovery targets."
         actions={
-          <Link href="/verify" className="button button-primary" data-testid="link-student-check-in">
-            <Fingerprint size={16} /> {live ? 'Confirm in-class attendance' : 'Verify attendance'}
-          </Link>
+          <Button variant="primary" onClick={() => setShowScanner(true)}>
+            <Camera size={16} /> SCAN QR
+          </Button>
         }
       />
 
-      {live && (
+      {isBelow && (
+        <Card className="spot-check-banner" style={{ background: '#fdf6f5', borderColor: '#f2d3ce' }}>
+          <div className="spot-check-info">
+            <span className="pulse-dot" style={{ background: '#d76c60' }} />
+            <div>
+              <h4 style={{ color: '#b94b3e' }}>WARNING: Attendance Below {threshold}%</h4>
+              <p style={{ color: '#885852' }}>Your attendance is {currentPct}%. You need to attend upcoming classes consistently.</p>
+            </div>
+          </div>
+          <Button variant="secondary" style={{ background: '#fff', color: '#b94b3e', border: '1px solid #f2d3ce' }} onClick={() => {
+            document.querySelector('.recovery-panel')?.scrollIntoView({ behavior: 'smooth' });
+          }}>
+            VIEW RECOVERY PLAN
+          </Button>
+        </Card>
+      )}
+      
+      {activeSession && (
         <Card className="spot-check-banner">
           <div className="spot-check-info">
             <span className="pulse-dot" />
             <div>
-              <h4>{classLabel(store, live.classId)} is LIVE now</h4>
-              <p>Lecture in session in room {getClass(store, live.classId)?.room}. Check in using rotating QR or passkey.</p>
+              <h4>Lecture is LIVE now</h4>
+              <p>Check in using rotating QR or passkey directly.</p>
             </div>
           </div>
-          <Link href="/verify" className="button button-primary">
-            Check in now <ArrowRight size={14} />
-          </Link>
+          <Button onClick={() => setShowScanner(true)}>
+            <Camera size={16} /> SCAN QR
+          </Button>
         </Card>
+      )}
+
+      {showScanner && (
+        <QRScannerModal store={store} onClose={() => setShowScanner(false)} onScan={handleScanCode} />
       )}
 
       <section className="metric-grid student-metrics">
         <MetricCard
-          label="Your Attendance Rate"
+          label="Overall Attendance"
           value={`${currentPct}%`}
           detail={isBelow ? `Below ${threshold}% CHARUSAT threshold` : `Meeting ${threshold}% threshold`}
           icon={<Activity size={18} />}
@@ -340,25 +477,27 @@ export function StudentOverview({ store, onToast }: { store: Store; onToast: (ms
           warn={isBelow}
         />
         <MetricCard
-          label="Enrolled Cohort"
-          value={classLabel(store, student?.classId ?? '')}
-          detail={getClass(store, student?.classId ?? '')?.room ?? 'CSPIT Lab'}
+          label="Classes Attended"
+          value={`${classesAttended} / ${totalClasses}`}
+          detail={lateCount > 0 ? `Includes ${lateCount} late` : "All on time"}
           icon={<BookOpen size={18} />}
           mark="02"
         />
         <MetricCard
-          label="Recent Sessions"
-          value={String(recent.length)}
-          detail="Verified check-in records"
-          icon={<CalendarDays size={18} />}
+          label="Classes Missed"
+          value={String(classesMissed)}
+          detail="Total unexcused absences"
+          icon={<AlertTriangle size={18} />}
           mark="03"
+          warn={classesMissed > 0}
         />
         <MetricCard
-          label="Status"
-          value={isBelow ? 'Support Plan' : 'On Track'}
+          label="Current Status"
+          value={isBelow ? 'WARNING' : 'SAFE'}
           detail={isBelow ? `${neededConsecutive} classes to recover` : 'All thresholds satisfied'}
-          icon={<Sparkles size={18} />}
+          icon={<ShieldCheck size={18} />}
           mark="04"
+          warn={isBelow}
         />
       </section>
 
@@ -367,14 +506,13 @@ export function StudentOverview({ store, onToast }: { store: Store; onToast: (ms
           <span className="eyebrow">ATTENDANCE SIGNAL</span>
           <div className="student-home-rate">{currentPct}<sup>%</sup></div>
           <div className="attendance-large-track">
-            <span style={{ width: `${currentPct}%` }} />
+            <span style={{ width: `${currentPct}%`, background: isBelow ? '#d76c60' : undefined }} />
           </div>
           <div className="student-home-threshold">
             <span>Required Threshold: {threshold}%</span>
-            <span>{isBelow ? 'Recovery plan recommended' : 'Healthy standing'}</span>
+            <span style={{ color: isBelow ? '#d76c60' : undefined }}>{isBelow ? 'Recovery plan recommended' : 'Healthy standing'}</span>
           </div>
 
-          {/* Recovery Calculator Inspired by Stitch */}
           <div className="recovery-panel">
             <div className="recovery-head">
               <div>
@@ -382,7 +520,7 @@ export function StudentOverview({ store, onToast }: { store: Store; onToast: (ms
                 <h3 style={{ margin: '3px 0 0', fontSize: '13px' }}>Reach Healthy Standing</h3>
               </div>
               {isBelow && (
-                <span className="recovery-target-badge">
+                <span className="recovery-target-badge" style={{ background: '#fdf6f5', color: '#b94b3e', border: '1px solid #f2d3ce' }}>
                   {neededConsecutive} classes needed
                 </span>
               )}
@@ -408,13 +546,15 @@ export function StudentOverview({ store, onToast }: { store: Store; onToast: (ms
             </div>
             <div className="recovery-projection">
               <span>Projected attendance:</span>
-              <strong>{simulatedPercent}% {simulatedPercent >= threshold ? '✓ On track' : '⚠️ Still below'}</strong>
+              <strong style={{ color: simulatedPercent >= threshold ? '#1a6857' : '#b94b3e' }}>
+                {simulatedPercent}% {simulatedPercent >= threshold ? '✅ On track' : '❌ Still below'}
+              </strong>
             </div>
           </div>
 
           <div style={{ display: 'flex', gap: '8px', marginTop: '14px' }}>
-            <Link href="/verify" className="button button-primary" style={{ flex: 1 }}>
-              {live ? 'Confirm classroom presence' : 'Verification flow'} <ArrowRight size={15} />
+            <Link href="/attendance" className="button button-primary" style={{ flex: 1 }}>
+              <CalendarDays size={15} /> View Attendance History
             </Link>
             <Button variant="secondary" onClick={() => setAdvisorModal(true)}>
               Contact advisor
@@ -430,18 +570,17 @@ export function StudentOverview({ store, onToast }: { store: Store; onToast: (ms
             </div>
             <Link href="/attendance" className="text-link">Full history <ArrowRight size={14} /></Link>
           </div>
-          {recent.length ? (
-            recent.map(session => {
-              const record = session.attendanceRecords.find(r => r.studentId === student?.id)!;
+          {attendance.length ? (
+            attendance.slice(0, 5).map(record => {
               return (
-                <div className="student-history-row" key={session.id}>
+                <div className="student-history-row" key={record.id || record.markedAt}>
                   <span className="history-day">
-                    {new Intl.DateTimeFormat('en', { day: '2-digit' }).format(new Date(session.start))}
-                    <small>{new Intl.DateTimeFormat('en', { month: 'short' }).format(new Date(session.start)).toUpperCase()}</small>
+                    {new Intl.DateTimeFormat('en', { day: '2-digit' }).format(new Date(record.markedAt || record.time))}
+                    <small>{new Intl.DateTimeFormat('en', { month: 'short' }).format(new Date(record.markedAt || record.time)).toUpperCase()}</small>
                   </span>
                   <span>
-                    <b>{classLabel(store, session.classId)}</b>
-                    <small>{fmtDate(session.start)} · {fmtTime(session.start)} · {record?.verificationMethod ?? 'Passkey'}</small>
+                    <b>{record.subjectCode || 'Lecture'}</b>
+                    <small>{fmtDate(record.markedAt || record.time)} - {fmtTime(record.markedAt || record.time)} - {record.verificationMethod ?? 'Passkey'}</small>
                   </span>
                   <Badge tone={toneForStatus(record.status)}>{record.status}</Badge>
                 </div>
@@ -473,11 +612,11 @@ export function StudentOverview({ store, onToast }: { store: Store; onToast: (ms
             <span className="avatar avatar-profile">{advisor ? initials(advisor.name) : 'AG'}</span>
             <div>
               <b>{advisor?.name ?? 'Dr. Amit Ganatra'}</b>
-              <small>{advisor?.department ?? 'Computer Science & Engineering'} · {advisor?.email ?? 'amit.ganatra@charusat.ac.in'}</small>
+              <small>{advisor?.department ?? 'Computer Science & Engineering'} - {advisor?.email ?? 'amit.ganatra@charusat.ac.in'}</small>
             </div>
           </div>
           <p style={{ fontSize: '11px', color: '#576763', lineHeight: 1.5, margin: '0 0 12px' }}>
-            Office hours: Tuesdays & Thursdays 2:00 PM – 4:00 PM (CSPIT Room 204). You can send an advising note directly through the academic portal.
+            Office hours: Tuesdays & Thursdays 2:00 PM - 4:00 PM (CSPIT Room 204). You can send an advising note directly through the academic portal.
           </p>
           <Button
             variant="secondary"

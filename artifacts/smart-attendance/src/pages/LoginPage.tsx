@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { Link } from 'wouter';
-import { ArrowRight, Fingerprint, LockKeyhole, QrCode, ShieldCheck, Database, Check } from 'lucide-react';
-import type { Role, Store } from '../data';
-import { dataService } from '../data';
+import { ArrowRight, Fingerprint, LockKeyhole, QrCode, Database, AlertTriangle } from 'lucide-react';
+import type { Store } from '../data';
 import { Button } from '../components';
-import { roles } from '../utils';
+import { loginWithBackend, fetchCurrentUser } from '../api';
+import { dataService } from '../data';
 
 interface LoginPageProps {
   store: Store;
@@ -12,45 +12,43 @@ interface LoginPageProps {
 }
 
 export function LoginPage({ store, onSignedIn }: LoginPageProps) {
-  const [role, setRole] = useState<Role>(store.currentUser.role);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const getRoleEmail = (r: Role) => {
-    switch (r) {
-      case 'Student':
-        return '22dcse001@charusat.edu.in';
-      case 'Teacher':
-        return 'trushit.ce@charusat.ac.in';
-      case 'Administrator':
-      default:
-        return 'amit.ganatra@charusat.ac.in';
-    }
-  };
-
-  const getRoleDisplayName = (r: Role) => {
-    switch (r) {
-      case 'Student':
-        return 'Aarav Patel (22DCSE001)';
-      case 'Teacher':
-        return 'Prof. Trushit Upadhyaya';
-      case 'Administrator':
-      default:
-        return 'Dr. Amit Ganatra (Principal/Dean)';
-    }
-  };
-
-  const handleSignIn = (e: React.FormEvent) => {
+  const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    dataService.switchRole(role);
-    setMessage(`Authenticated as ${role} (${getRoleDisplayName(role)}). Loading workspace...`);
-    setTimeout(onSignedIn, 300);
-  };
+    if (!email || !password) {
+      setError('Please enter both email and password.');
+      return;
+    }
+    setError('');
+    setLoading(true);
 
-  const handleQuickSelect = (r: Role) => {
-    setRole(r);
-    dataService.switchRole(r);
-    setMessage(`Switched to ${r} session.`);
-    setTimeout(onSignedIn, 250);
+    try {
+      const result = await loginWithBackend(email, password);
+      
+      if (result.success && result.data?.user) {
+        // Backend determines role
+        const role = result.data.user.role === 'ADMIN' ? 'Administrator' : 
+                     result.data.user.role === 'TEACHER' ? 'Teacher' : 'Student';
+        
+        setMessage(`Authenticated as ${role}. Loading workspace...`);
+        
+        // Update local mock store for hybrid compatibility if needed
+        dataService.switchRole(role);
+        
+        setTimeout(onSignedIn, 300);
+      } else {
+        setError(result.error || result.message || 'Login failed. Please check your credentials.');
+      }
+    } catch (err: any) {
+      setError('An error occurred during login.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -74,7 +72,7 @@ export function LoginPage({ store, onSignedIn }: LoginPageProps) {
         </div>
         <div className="login-side-foot">
           <span>{store.settings.campus}</span>
-          <span>Changa Campus · NAAC A+ Accredited</span>
+          <span>Changa Campus - NAAC A+ Accredited</span>
         </div>
         <div className="login-art">
           <div className="art-ring art-ring-one" />
@@ -89,59 +87,42 @@ export function LoginPage({ store, onSignedIn }: LoginPageProps) {
         <div className="login-form-box">
           <span className="login-kicker">CHARUSAT SECURE SSO GATEWAY</span>
           <h2>Sign in to Campus Portal</h2>
-          <p className="login-subtitle">Select an institutional role to explore the live attendance workflows.</p>
+          <p className="login-subtitle">Enter your university email and password to continue.</p>
           
           {message && <div className="inline-notice">{message}</div>}
-
-          {/* Quick Role Selection Badges */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', marginBottom: '16px' }}>
-            {roles.map(r => (
-              <button
-                key={r}
-                type="button"
-                onClick={() => setRole(r)}
-                style={{
-                  padding: '8px 10px',
-                  borderRadius: '8px',
-                  border: role === r ? '2px solid #187667' : '1px solid #dcd7ce',
-                  background: role === r ? '#e8f4f1' : '#ffffff',
-                  color: role === r ? '#187667' : '#576763',
-                  fontWeight: role === r ? 600 : 500,
-                  fontSize: '12px',
-                  cursor: 'pointer',
-                  transition: 'all 0.15s ease',
-                  textAlign: 'center',
-                }}
-              >
-                {r === 'Administrator' ? 'Dean / Admin' : r === 'Teacher' ? 'Faculty' : 'Student'}
-              </button>
-            ))}
-          </div>
+          
+          {error && (
+            <div className="form-error" role="alert" style={{ marginBottom: 16 }}>
+              <AlertTriangle size={15} /> {error}
+            </div>
+          )}
 
           <form onSubmit={handleSignIn} className="login-form">
             <label className="form-field">
-              <span>Account Identity</span>
+              <span>University Email</span>
               <input
                 type="email"
-                value={getRoleEmail(role)}
-                readOnly
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="id@charusat.edu.in"
+                required
                 data-testid="input-login-email"
-                style={{ background: '#faf9f6', cursor: 'default' }}
               />
             </label>
 
             <label className="form-field">
-              <span>Assigned Member</span>
+              <span>Password</span>
               <input
-                type="text"
-                value={getRoleDisplayName(role)}
-                readOnly
-                style={{ background: '#faf9f6', cursor: 'default' }}
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                required
               />
             </label>
 
-            <Button type="submit" className="login-submit" testId="button-demo-sign-in">
-              Continue as {role} <ArrowRight size={16} />
+            <Button type="submit" className="login-submit" testId="button-demo-sign-in" disabled={loading}>
+              {loading ? 'Authenticating...' : 'Sign In'} <ArrowRight size={16} />
             </Button>
           </form>
 
@@ -164,14 +145,6 @@ export function LoginPage({ store, onSignedIn }: LoginPageProps) {
             </div>
           </div>
 
-          <div className="local-demo-note" style={{ marginTop: '16px' }}>
-            <LockKeyhole size={15} />
-            <span>
-              <b>Enterprise FIDO2 & Anti-Proxy Simulation</b>
-              <small>Simulates complete institutional single sign-on, Wi-Fi subnet validation, and hardware token checks.</small>
-            </span>
-          </div>
-
           <div className="login-divider"><span>OR LAUNCH DIRECT STUDENT VERIFICATION</span></div>
           
           <Link href="/verify" className="login-verify-link" data-testid="link-student-verification">
@@ -180,7 +153,7 @@ export function LoginPage({ store, onSignedIn }: LoginPageProps) {
         </div>
 
         <div className="login-bottom-note">
-          CHARUSAT · Charotar University of Science & Technology · Changa, Anand, Gujarat 388421
+          CHARUSAT - Charotar University of Science & Technology - Changa, Anand, Gujarat 388421
         </div>
       </div>
     </div>
