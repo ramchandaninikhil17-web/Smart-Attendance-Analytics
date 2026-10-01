@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Smart Attendance"
+description = "A role-aware attendance and classroom analytics platform for colleges. Teachers run secure live attendance sessions, students verify presence, and administrators monitor trends, at-risk learners, and security events."
+version = "1.0.0"
+id = "artifacts/smart-attendance"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23247
+
+[services.development]
+run = "pnpm --filter @workspace/smart-attendance run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/smart-attendance", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/smart-attendance/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23247"
+BASE_PATH = "/"
